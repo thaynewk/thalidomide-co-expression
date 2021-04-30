@@ -1,0 +1,236 @@
+########################################################
+####### 
+####### THALIDOMIDE CO-EXPRESSION ANALYSIS
+#######
+########################################################
+
+########################################################
+
+##the following script was used to perform co-expression
+#analysis in a thalidomide-exposure study available
+#in GEO database, under number GSE61306
+
+##original publication of the study
+#DOI: 10.1016/j.taap.2015.05.009
+
+##all the functions here used are available in the
+#packages, downloaded from CRAN or Bioconductor
+
+##the following packages are used in the analysis
+#hence they need to be installed before proceeding
+#BiocManager::install("oligo")
+#BiocManager::install("mogene20sttranscriptcluster.db")
+#BiocManager::install("mouse4302.db")
+#install.packages("data.table")
+#install.packages("dplyr")
+#install.packages("DCGL")
+
+##the following studies were used in our study
+##the samples need to be downloaded before proceeding
+##other studies can be evaluated using the same script
+
+##GSE61306 study can be accessed in
+##https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE61306
+
+##E-TABM-903 can be accessed in
+#https://www.ebi.ac.uk/arrayexpress/experiments/E-TABM-903/
+##samples used: CON24h_1, CON24h_2, CON24h_3, CON24h_4,
+#CON24h_5, CON24h_6, CON24h_7, CON24h_8, CON24h_9, CON24h_10,
+#CON24h_11, CON24h_12, RA24h_1, RA24h_2, RA24h_4,
+#RA24h_5, RA24h_6, RA24h_7, RA24h_8
+
+##E-TABM-1205 can be accessed in
+#https://www.ebi.ac.uk/arrayexpress/experiments/E-TABM-1205/
+##samples used: COND4_1, COND4_3n, COND4_4, COND4_5n, COND4_7,
+#VPA1000_1, VPA1000_2, VPA1000_3, VPA1000_4, VPA1000_5,
+#VPA1000_6, VPA1000_8, VPA1000_10
+
+##E-MTAB-300 can be accessed in
+#https://www.ebi.ac.uk/arrayexpress/experiments/E-MTAB-300/
+##samples used: CON24h_1, CON24h_3, CON24h_4, CON24h_5,
+#CON24h_6, CON24h_7, CON24h_8, CON24h_9, WARF_1, WARF_2,
+#WARF_4, WARF_5, WARF_6, WARF_7, WARF_8, WARF_9
+
+#############################################################
+
+##set working directory
+setwd("YOUR WORKING DIRECTORY")
+
+##call the .CEL files
+##perform normalization
+library(oligo)
+list.celfiles("YOUR WORKING DIRECTORY")
+celFiles <- list.celfiles("YOUR WORKING DIRECTORY", full.names=TRUE)
+rawData <- read.celfiles(celFiles)
+eset <- rma(rawData)
+expGSE61306<-exprs(eset)
+
+##call the platform library
+##identify which probe to each gene
+##if you are working with GSE61306
+library(mogene20sttranscriptcluster.db)
+x <- mogene20sttranscriptclusterSYMBOL
+
+##if you are working with E-TABM-903,E-TABM-1205, 
+#or E-MTAB-300, select this library instead
+library(mouse4302.db)
+x <- mouse4302SYMBOL
+
+##Get the probe identifiers that are mapped to SYMBOL
+mapped_probes <- mappedkeys(x)
+##Convert to a list
+xx <- unlist(as.list(x[mapped_probes]))
+##Get the probe identifiers that are mapped to a gene name
+genenames <- xx[(rownames(expGSE61306))]
+##Convert to a data.frame
+symbol<-as.data.frame(genenames)
+probes<-names(genenames)
+symbol<-cbind(probes,symbol)
+##remove NA's values
+symbol[apply(symbol, 1, function(x)!any(is.na(x))), , drop=F]->symbol
+
+##if you'd like to create a file with the gene symbols
+#and probes
+write.table(symbol, file="symbol.txt")
+
+##to combine with the expression set
+GSE61306 <- as.data.frame(expGSE61306)
+library(data.table)
+setDT(GSE61306, keep.rownames = TRUE)
+names(GSE61306)[1] <- "probes"
+exp <- merge(symbol,GSE61306)
+
+##if you'd like to save the expression file
+write.table(exp, "GSE61306.txt")
+
+##upload a list with candidate genes
+genes <- read.table("genes.txt",header=T)
+
+#or
+
+##if you'd like to see NF-kB pathway results
+genes <- read.table("genes_NFKB.txt",header=T)
+
+##merge with your expression file
+exp <- merge(exp,genes)
+
+##in microarrays, many genes have more than one probe
+##calculate the mean expression for all the duplicated probes
+#for that, first extract the duplicated probed
+library(dplyr)
+exp <- exp[!duplicated(exp$genenames), ]
+exp$probes <- NULL
+
+##genes as rownames
+exp <- data.frame(exp[,-1], row.names=exp[,1])
+
+##to export the final list of genes, if you'd like
+write.csv(exp, "DCGL61306_driven.csv")
+
+##now, start on DCGL
+library(DCGL)
+
+##divide exprs into two parts corresponding to condition 1 
+#(exprs.1) and condition 2 (exprs.2) respectively
+#controls are exprs.1 and thalidomide exprs.2
+expGenes<-rownames(exp)
+exprs.control<-exp[,1:9] 
+exprs.talido<-exp[,10:18]
+
+##Run DCp 
+##Generates a matrix of all genes with dC column, link column, p value column and q-value
+##We do not use permutation, so p-value and q-value are all "NA"
+DCp.res<-DCp(exprs.control,exprs.talido,r.method = "pearson",
+             link.method='qth',cutoff=0.5,N=0)
+
+##reorder by dC
+DCp.res <- DCp.res[order(DCp.res$dC,decreasing=TRUE),]
+
+##perform histogram
+hist(DCp.res$dC,breaks=20)
+abline(v=median(DCp.res$dC),lty=2)
+
+## Run DCe 
+##DCe.res contains two components, one is DCe.res$DCGs and the other is DCe.res$DCLs
+##DCe.res$DCGs is a matrix which includes seven columns
+##DCe.res$DCLs is a matrix which covers links
+##Parameters used are as follows: link filtering method is "qth"; cutoff used for link
+#filtering is 0.1; correlation coefficient is computed by Pearson method; 
+#and the cutoff of q-value is 0.01.
+DCe.res<-DCe(exprs.control,exprs.talido,
+             link.method='qth',
+             cutoff=0.5,r.method = "pearson",
+             q.method = "BH",
+             nbins=6,p=0.1)
+
+##to visualize as data.frames
+DCe.DCG <- data.frame(DCe.res$DCGs)
+DCe.DCL <- data.frame(DCe.res$DCLs)
+
+##if you'd like to write the files
+write.csv(DCe.DCG, "DCe_DCG.csv")
+write.csv(DCe.DCL, "DCe_DCL.csv")
+
+##combine two Differential Co-expression Analysis results
+DCsum.res<-DCsum(DCp.res,DCe.res,
+                 DCpcutoff=0.25,DCecutoff=0.25)
+
+##If the user need to
+##narrow down DCGs or DCLs, the may consider setting lower `cutoff' (in `qth' or `percent')
+#or higher co-expression correlation coeffcient `cutoff' (in `rth') or giving a stricter outlier
+#fraction (p-value).
+
+##to visualize DCsum as data.frame
+DCsum.DCG <- data.frame(DCsum.res$DCGs)
+DCsum.DCL <- data.frame(DCsum.res$DCLs)
+
+##to write the files
+write.csv(DCsum.DCG, "DCsum_DCG.csv")
+write.csv(DCsum.DCL, "DCsum_DCL.csv")
+
+##to co-expression only, the script ends here
+
+#########################################################
+
+##to evaluate transcription factors
+
+##for mouse studies
+##download TRRUST data for mouse
+#https://www.grnpedia.org/trrust/data/trrust_rawdata.human.tsv
+tf2target <- read.table("TRRUST.txt",header=T)
+
+##for human studies
+data(tf2target)
+
+##sort out differentially regulated genes and differentially regulated links
+#evaluating DCSum
+DRsort.DCsum.res<-DRsort(DCsum.res$DCGs,DCsum.res$DCLs,tf2target,exp)
+
+##evaluating DCe
+DRsort.DCe.res<-DRsort(DCe.res$DCGs,DCe.res$DCLs,tf2target,exp)
+
+## plot differentially regulated links
+DRplot.DCsum.res<-DRplot(DCsum.res$DCGs,DCsum.res$DCLs,
+                   tf2target,
+                   exp.set,
+                   type='TF_bridged_DCL',
+                   vsize=10,asize=1,lcex=0.5,ewidth=1,
+                   figname=c('TF2target_DCL.pdf','TF_bridged.pdf'))
+
+##data.frame of the different files in list
+TF.DCG <- as.data.frame(DRsort.DCe.res$DCGs)
+TF.DCL <- as.data.frame(DRsort.DCe.res$DCLs)
+TF.DRG <- as.data.frame(DRsort.DCe.res$DRGs)
+TF.DRL <- as.data.frame(DRsort.DCe.res$DRLs)
+TF.geneTF <- as.data.frame(DRsort.DCe.res$DCG2TF)
+TF.bridged <- as.data.frame(DRsort.DCe.res$TF_bridged_DCL)
+
+#to write the files
+write.csv(TF.DCG, "TF.DCG_driven.csv")
+write.csv(TF.DCL, "TF.DCL_driven.csv")
+write.csv(TF.DRG, "TF.DRG_driven.csv")
+write.csv(TF.DRL, "TF.DRL_driven.csv")
+write.csv(TF.geneTF, "TF.geneTF_driven.csv")
+write.csv(TF.bridged, "TF.bridged_driven.csv")
+
+#####################################################################
